@@ -12,9 +12,11 @@ import android.os.Bundle
 import android.os.StatFs
 import android.provider.Settings
 import android.text.format.Formatter
+import android.view.Gravity
 import android.view.View
 import android.widget.Button
 import android.widget.CheckBox
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -44,7 +46,7 @@ class MainActivity : ComponentActivity() {
 
     private val requestNotificationPermission = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
-    ) { /* User handled notification permission */ }
+    ) { /* Notification permission handled */ }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -79,9 +81,29 @@ class MainActivity : ComponentActivity() {
         scroll.addView(root)
         setContentView(scroll)
 
-        root.addView(label("SMART RAM OPTIMIZER", 25, Color.WHITE, true))
-        root.addView(label("Shizuku • Smart Focus • App Manager", 14, 0xFFBEB9D2.toInt(), false))
-        root.addView(space(16))
+        // Header with Logo
+        val header = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+
+        val logo = ImageView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(dp(54), dp(54)).apply {
+                marginEnd = dp(14)
+            }
+            setImageResource(R.drawable.ic_ram_chip)
+        }
+
+        val titleBox = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(label("SMART RAM OPTIMIZER", 20, Color.WHITE, true))
+            addView(label("Shizuku • Smart Focus • App Manager", 13, 0xFFBEB9D2.toInt(), false))
+        }
+
+        header.addView(logo)
+        header.addView(titleBox)
+        root.addView(header)
+        root.addView(space(18))
 
         val stats = panel()
         ramText = label("RAM: loading…", 17, Color.WHITE, true)

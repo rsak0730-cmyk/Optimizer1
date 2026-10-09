@@ -1,0 +1,43 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="96dp"
+    android:height="96dp"
+    android:viewportWidth="96"
+    android:viewportHeight="96">
+
+    <!-- Background glow/accent shield -->
+    <path
+        android:fillColor="#1E1B38"
+        android:pathData="M48,8 L82,22 L82,54 C82,72 67,86 48,90 C29,86 14,72 14,54 L14,22 Z" />
+
+    <!-- Outer shield border -->
+    <path
+        android:strokeColor="#6C5CE7"
+        android:strokeWidth="2.5"
+        android:pathData="M48,8 L82,22 L82,54 C82,72 67,86 48,90 C29,86 14,72 14,54 L14,22 Z" />
+
+    <!-- Center RAM Chip Body -->
+    <path
+        android:fillColor="#2D2B52"
+        android:strokeColor="#A29BFE"
+        android:strokeWidth="2"
+        android:pathData="M32,32 H64 V64 H32 Z" />
+
+    <!-- Chip Pins - Left & Right -->
+    <path
+        android:strokeColor="#00CEC9"
+        android:strokeWidth="2"
+        android:strokeLineCap="round"
+        android:pathData="M26,38 H32 M26,48 H32 M26,58 H32 M64,38 H70 M64,48 H70 M64,58 H70" />
+
+    <!-- Chip Pins - Top & Bottom -->
+    <path
+        android:strokeColor="#00CEC9"
+        android:strokeWidth="2"
+        android:strokeLineCap="round"
+        android:pathData="M38,26 V32 M48,26 V32 M58,26 V32 M38,64 V70 M48,64 V70 M58,64 V70" />
+
+    <!-- Center Lightning / Turbo Flash -->
+    <path
+        android:fillColor="#00CEC9"
+        android:pathData="M49,36 L40,49 H47 L45,60 L56,47 H49 Z" />
+</vector>
