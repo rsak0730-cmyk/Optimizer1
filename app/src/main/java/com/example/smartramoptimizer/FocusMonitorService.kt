@@ -12,6 +12,9 @@ import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import rikka.shizuku.Shizuku
+import java.io.InputStream
+import java.io.OutputStream
+import java.lang.reflect.Method
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -108,14 +111,38 @@ class FocusMonitorService : Service() {
         for (pkg in targets) {
             try {
                 val cleanPkg = pkg.replace("'", "'\\''")
-                val process = Shizuku.newProcess(arrayOf("sh", "-c", "am force-stop '$cleanPkg'"), null, null)
-                process.outputStream.close()
-                process.inputStream.close()
-                process.errorStream.close()
-                process.waitFor()
+                executeShizukuCommand("am force-stop '$cleanPkg'")
             } catch (_: Exception) {
-                // Command availability depends on Shizuku state and device security policy
+                // Ignore execution errors on unsupported environments
             }
+        }
+    }
+
+    private fun executeShizukuCommand(command: String) {
+        try {
+            val cmdArray = arrayOf("sh", "-c", command)
+            val method: Method = Shizuku::class.java.getDeclaredMethod(
+                "newProcess",
+                Array<String>::class.java,
+                Array<String>::class.java,
+                String::class.java
+            )
+            method.isAccessible = true
+            val process = method.invoke(null, cmdArray, null, null)
+
+            if (process != null) {
+                val outputStream = process.javaClass.getMethod("getOutputStream").invoke(process) as? OutputStream
+                val inputStream = process.javaClass.getMethod("getInputStream").invoke(process) as? InputStream
+                val errorStream = process.javaClass.getMethod("getErrorStream").invoke(process) as? InputStream
+
+                outputStream?.close()
+                inputStream?.close()
+                errorStream?.close()
+
+                process.javaClass.getMethod("waitFor").invoke(process)
+            }
+        } catch (_: Exception) {
+            // Shizuku command execution failure fallback
         }
     }
 
