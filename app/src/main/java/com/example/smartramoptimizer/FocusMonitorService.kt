@@ -11,9 +11,10 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
+import android.util.Log
 import rikka.shizuku.Shizuku
-import java.io.InputStream
-import java.io.OutputStream
+import java.io.BufferedReader
+import java.io.InputStreamReader
 import java.lang.reflect.Method
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
@@ -48,6 +49,7 @@ class FocusMonitorService : Service() {
         }
 
         if (running.compareAndSet(false, true)) {
+            Log.d(TAG, "Starting monitorLoop...")
             executor.execute { monitorLoop() }
         }
         return START_STICKY
@@ -59,12 +61,13 @@ class FocusMonitorService : Service() {
                 val now = System.currentTimeMillis()
                 val foreground = findForegroundPackage(now)
                 if (!foreground.isNullOrBlank() && foreground != packageName && foreground != lastForegroundPackage) {
+                    Log.d(TAG, "Foreground changed to: $foreground (previous: $lastForegroundPackage)")
                     lastForegroundPackage = foreground
                     handleForegroundChange(foreground)
                     updateNotification("Active app: ${appLabel(foreground)}")
                 }
-            } catch (_: Exception) {
-                // UsageStats can vary across OEM configurations
+            } catch (e: Exception) {
+                Log.e(TAG, "Error in monitor loop", e)
             }
             try {
                 Thread.sleep(2500)
@@ -97,6 +100,7 @@ class FocusMonitorService : Service() {
         val prefs = getSharedPreferences("optimizer", Context.MODE_PRIVATE)
         val selected = prefs.getStringSet("selected", emptySet()) ?: emptySet()
         val protected = prefs.getStringSet("protected", emptySet()) ?: emptySet()
+
         val targets = selected.filter {
             it != activePackage &&
             it != packageName &&
@@ -105,22 +109,31 @@ class FocusMonitorService : Service() {
             it != "com.android.settings"
         }
 
-        if (targets.isEmpty() || !Shizuku.pingBinder()) return
-        if (Shizuku.checkSelfPermission() != android.content.pm.PackageManager.PERMISSION_GRANTED) return
+        Log.d(TAG, "Active: $activePackage | Targets to stop: $targets")
+
+        if (targets.isEmpty()) return
+
+        if (!Shizuku.pingBinder()) {
+            Log.e(TAG, "Shizuku pingBinder failed! Service not connected.")
+            return
+        }
+
+        if (Shizuku.checkSelfPermission() != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            Log.e(TAG, "Shizuku permission NOT granted!")
+            return
+        }
 
         for (pkg in targets) {
-            try {
-                val cleanPkg = pkg.replace("'", "'\\''")
-                executeShizukuCommand("am force-stop '$cleanPkg'")
-            } catch (_: Exception) {
-                // Ignore execution errors on unsupported environments
-            }
+            val cleanPkg = pkg.replace("'", "'\\''")
+            executeShizukuCommand("am force-stop '$cleanPkg'")
         }
     }
 
     private fun executeShizukuCommand(command: String) {
         try {
+            Log.d(TAG, "Executing command: $command")
             val cmdArray = arrayOf("sh", "-c", command)
+            
             val method: Method = Shizuku::class.java.getDeclaredMethod(
                 "newProcess",
                 Array<String>::class.java,
@@ -131,18 +144,19 @@ class FocusMonitorService : Service() {
             val process = method.invoke(null, cmdArray, null, null)
 
             if (process != null) {
-                val outputStream = process.javaClass.getMethod("getOutputStream").invoke(process) as? OutputStream
-                val inputStream = process.javaClass.getMethod("getInputStream").invoke(process) as? InputStream
-                val errorStream = process.javaClass.getMethod("getErrorStream").invoke(process) as? InputStream
+                val inputStream = process.javaClass.getMethod("getInputStream").invoke(process) as? java.io.InputStream
+                val errorStream = process.javaClass.getMethod("getErrorStream").invoke(process) as? java.io.InputStream
 
-                outputStream?.close()
-                inputStream?.close()
-                errorStream?.close()
+                val output = inputStream?.let { BufferedReader(InputStreamReader(it)).readText() } ?: ""
+                val err = errorStream?.let { BufferedReader(InputStreamReader(it)).readText() } ?: ""
 
-                process.javaClass.getMethod("waitFor").invoke(process)
+                val exitCode = process.javaClass.getMethod("waitFor").invoke(process) as? Int
+                Log.d(TAG, "Finished command: '$command' with exit code: $exitCode | out: $output | err: $err")
+            } else {
+                Log.e(TAG, "newProcess returned null")
             }
-        } catch (_: Exception) {
-            // Shizuku command execution failure fallback
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to execute Shizuku command: $command", e)
         }
     }
 
@@ -191,6 +205,7 @@ class FocusMonitorService : Service() {
     }
 
     companion object {
+        private const val TAG = "SmartRAMOptimizer"
         const val ACTION_START = "com.example.smartramoptimizer.START"
         const val ACTION_STOP = "com.example.smartramoptimizer.STOP"
         private const val CHANNEL_ID = "focus_monitor"
