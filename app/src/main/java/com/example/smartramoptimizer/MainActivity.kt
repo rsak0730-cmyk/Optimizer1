@@ -34,6 +34,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var shizukuText: TextView
     private lateinit var usageText: TextView
     private lateinit var focusText: TextView
+    private lateinit var quotaText: TextView
     private val selected = linkedSetOf<String>()
     private val protected = linkedSetOf(
         "com.android.systemui",
@@ -43,15 +44,17 @@ class MainActivity : ComponentActivity() {
         "com.google.android.inputmethod.latin",
         "com.samsung.android.honeyboard"
     )
+    private var maxAllowedApps = 1
 
     private val requestNotificationPermission = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
-    ) { /* Notification permission handled */ }
+    ) { /* Permission handled */ }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         selected.addAll(prefs.getStringSet("selected", emptySet()) ?: emptySet())
         protected.addAll(prefs.getStringSet("protected", emptySet()) ?: emptySet())
+        maxAllowedApps = prefs.getInt("max_allowed_apps", 1)
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             if (ContextCompat.checkSelfPermission(this, android.Manifest.permission.POST_NOTIFICATIONS)
@@ -81,7 +84,6 @@ class MainActivity : ComponentActivity() {
         scroll.addView(root)
         setContentView(scroll)
 
-        // Header with Logo
         val header = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -97,7 +99,7 @@ class MainActivity : ComponentActivity() {
         val titleBox = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             addView(label("SMART RAM OPTIMIZER", 20, Color.WHITE, true))
-            addView(label("Shizuku • Smart Focus • App Manager", 13, 0xFFBEB9D2.toInt(), false))
+            addView(label("Strict Concurrency & Memory Focus", 13, 0xFFBEB9D2.toInt(), false))
         }
 
         header.addView(logo)
@@ -105,19 +107,40 @@ class MainActivity : ComponentActivity() {
         root.addView(header)
         root.addView(space(18))
 
+        // Device Stats Panel
         val stats = panel()
-        ramText = label("RAM: loading…", 17, Color.WHITE, true)
-        storageText = label("Storage: loading…", 16, Color.WHITE, false)
+        ramText = label("RAM: loading…", 16, Color.WHITE, true)
+        storageText = label("Storage: loading…", 15, Color.WHITE, false)
         stats.addView(ramText)
-        stats.addView(space(8))
+        stats.addView(space(6))
         stats.addView(storageText)
         stats.addView(space(8))
-        stats.addView(button("Refresh device stats") { refreshStats() })
+        stats.addView(button("Refresh Stats") { refreshStats() })
         root.addView(stats)
 
         root.addView(space(12))
+
+        // App Limit Controls
+        val limitPanel = panel()
+        limitPanel.addView(label("CONCURRENT APP LIMIT", 17, Color.WHITE, true))
+        quotaText = label("Max running apps allowed: $maxAllowedApps", 15, 0xFF00CEC9.toInt(), true)
+        limitPanel.addView(quotaText)
+        limitPanel.addView(space(6))
+
+        val buttonRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        buttonRow.addView(button("1 App (Strict)") { setLimit(1) })
+        buttonRow.addView(spaceH(8))
+        buttonRow.addView(button("2 Apps") { setLimit(2) })
+        buttonRow.addView(spaceH(8))
+        buttonRow.addView(button("3 Apps") { setLimit(3) })
+        limitPanel.addView(buttonRow)
+        root.addView(limitPanel)
+
+        root.addView(space(12))
+
+        // Permissions & Shizuku
         val access = panel()
-        access.addView(label("PERMISSIONS & SERVICES", 18, Color.WHITE, true))
+        access.addView(label("PERMISSIONS & SERVICES", 17, Color.WHITE, true))
         shizukuText = label("Shizuku: checking…", 14, Color.WHITE, false)
         usageText = label("Usage Access: checking…", 14, Color.WHITE, false)
         access.addView(shizukuText)
@@ -130,27 +153,54 @@ class MainActivity : ComponentActivity() {
         root.addView(access)
 
         root.addView(space(12))
+
+        // Monitor Controls
         val focus = panel()
-        focus.addView(label("SMART FOCUS MONITOR", 18, Color.WHITE, true))
+        focus.addView(label("FOCUS ENFORCER", 17, Color.WHITE, true))
         focusText = label("", 14, Color.WHITE, false)
         focus.addView(focusText)
         focus.addView(space(6))
-        focus.addView(button("Start Focus Monitor") { startFocusMonitor() })
-        focus.addView(button("Stop Focus Monitor") { stopFocusMonitor() })
-        focus.addView(label(
-            "When the foreground app changes, selected and unprotected apps can be force-stopped through Shizuku. This does not freeze RAM directly. Force-stopping can interrupt notifications, audio and syncing.",
-            13, 0xFFBEB9D2.toInt(), false
-        ))
+        focus.addView(button("Start Focus Enforcer") { startFocusMonitor() })
+        focus.addView(button("Stop Focus Enforcer") { stopFocusMonitor() })
         root.addView(focus)
 
         root.addView(space(16))
-        root.addView(label("APP MANAGER", 20, Color.WHITE, true))
+        root.addView(label("MANAGE APPS", 19, Color.WHITE, true))
         root.addView(label(
-            "Check Manage to include an app in Focus Monitor. Check Protect to always skip it. System apps are hidden for safety.",
+            "Checked apps are kept under strict concurrency limit. Uncheck or 'Protect' apps you never want killed.",
             13, 0xFFBEB9D2.toInt(), false
         ))
         root.addView(space(8))
-        root.addView(button("Reload installed apps") { loadApps() })
+
+        val selectAllRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        selectAllRow.addView(button("Select All Apps") { selectAllApps(true) })
+        selectAllRow.addView(spaceH(8))
+        selectAllRow.addView(button("Unselect All") { selectAllApps(false) })
+        root.addView(selectAllRow)
+        root.addView(space(8))
+
+        loadApps()
+    }
+
+    private fun setLimit(limit: Int) {
+        maxAllowedApps = limit
+        prefs.edit().putInt("max_allowed_apps", limit).apply()
+        quotaText.text = "Max running apps allowed: $maxAllowedApps"
+        Toast.makeText(this, "Concurrency limit set to $limit app(s)", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun selectAllApps(select: Boolean) {
+        val apps = packageManager.getInstalledApplications(0)
+            .filter { it.packageName != packageName && (it.flags and ApplicationInfo.FLAG_SYSTEM) == 0 }
+
+        if (select) {
+            for (app in apps) {
+                if (app.packageName !in protected) selected.add(app.packageName)
+            }
+        } else {
+            selected.clear()
+        }
+        saveSets()
         loadApps()
     }
 
@@ -182,9 +232,9 @@ class MainActivity : ComponentActivity() {
                 }
             }
             val protectBox = CheckBox(this).apply {
-                text = "Protect this app"
+                text = "Protect this app (Never kill)"
                 textSize = 12f
-                setTextColor(0xFFBEB9D2.toInt())
+                setTextColor(0xFF00CEC9.toInt())
                 isChecked = protected.contains(info.packageName)
                 setOnCheckedChangeListener { _, checked ->
                     if (checked) {
@@ -231,12 +281,12 @@ class MainActivity : ComponentActivity() {
         }
         val intent = Intent(this, FocusMonitorService::class.java).setAction(FocusMonitorService.ACTION_START)
         ContextCompat.startForegroundService(this, intent)
-        focusText.text = "Focus Monitor start requested. Keep its notification visible."
+        focusText.text = "Focus Enforcer running (Quota: $maxAllowedApps app)."
     }
 
     private fun stopFocusMonitor() {
         stopService(Intent(this, FocusMonitorService::class.java))
-        focusText.text = "Focus Monitor stopped."
+        focusText.text = "Focus Enforcer stopped."
     }
 
     private fun refreshStatuses() {
@@ -302,6 +352,10 @@ class MainActivity : ComponentActivity() {
 
     private fun space(height: Int) = View(this).apply {
         layoutParams = LinearLayout.LayoutParams(1, dp(height))
+    }
+
+    private fun spaceH(width: Int) = View(this).apply {
+        layoutParams = LinearLayout.LayoutParams(dp(width), 1)
     }
 
     private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()

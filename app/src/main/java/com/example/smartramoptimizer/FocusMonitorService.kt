@@ -13,9 +13,10 @@ import android.os.Build
 import android.os.IBinder
 import android.util.Log
 import rikka.shizuku.Shizuku
-import java.io.BufferedReader
-import java.io.InputStreamReader
+import java.io.InputStream
+import java.io.OutputStream
 import java.lang.reflect.Method
+import java.util.LinkedList
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -23,6 +24,7 @@ class FocusMonitorService : Service() {
     private val executor = Executors.newSingleThreadExecutor()
     private val running = AtomicBoolean(false)
     private var lastForegroundPackage: String? = null
+    private val activeAppQueue = LinkedList<String>()
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -32,7 +34,7 @@ class FocusMonitorService : Service() {
             return START_NOT_STICKY
         }
         createNotificationChannel()
-        val notif = buildNotification("Monitoring foreground app")
+        val notif = buildNotification("Monitoring active app limits")
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             startForeground(
@@ -49,7 +51,6 @@ class FocusMonitorService : Service() {
         }
 
         if (running.compareAndSet(false, true)) {
-            Log.d(TAG, "Starting monitorLoop...")
             executor.execute { monitorLoop() }
         }
         return START_STICKY
@@ -61,16 +62,15 @@ class FocusMonitorService : Service() {
                 val now = System.currentTimeMillis()
                 val foreground = findForegroundPackage(now)
                 if (!foreground.isNullOrBlank() && foreground != packageName && foreground != lastForegroundPackage) {
-                    Log.d(TAG, "Foreground changed to: $foreground (previous: $lastForegroundPackage)")
                     lastForegroundPackage = foreground
-                    handleForegroundChange(foreground)
-                    updateNotification("Active app: ${appLabel(foreground)}")
+                    enforceAppLimit(foreground)
+                    updateNotification("Current App: ${appLabel(foreground)}")
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Error in monitor loop", e)
             }
             try {
-                Thread.sleep(2500)
+                Thread.sleep(1500)
             } catch (_: InterruptedException) {
                 break
             }
@@ -79,16 +79,16 @@ class FocusMonitorService : Service() {
 
     private fun findForegroundPackage(now: Long): String? {
         val usm = getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
-        val events = usm.queryEvents(now - 15_000, now)
+        val events = usm.queryEvents(now - 10_000, now)
         val event = UsageEvents.Event()
         var latestPackage: String? = null
         var latestTime = 0L
 
         while (events.hasNextEvent()) {
             events.getNextEvent(event)
-            val foregroundEvent = event.eventType == UsageEvents.Event.MOVE_TO_FOREGROUND ||
+            val isForeground = event.eventType == UsageEvents.Event.MOVE_TO_FOREGROUND ||
                 (Build.VERSION.SDK_INT >= 29 && event.eventType == UsageEvents.Event.ACTIVITY_RESUMED)
-            if (foregroundEvent && event.timeStamp >= latestTime) {
+            if (isForeground && event.timeStamp >= latestTime) {
                 latestTime = event.timeStamp
                 latestPackage = event.packageName
             }
@@ -96,34 +96,45 @@ class FocusMonitorService : Service() {
         return latestPackage
     }
 
-    private fun handleForegroundChange(activePackage: String) {
+    private fun enforceAppLimit(activePackage: String) {
         val prefs = getSharedPreferences("optimizer", Context.MODE_PRIVATE)
+        val maxAllowed = prefs.getInt("max_allowed_apps", 1)
         val selected = prefs.getStringSet("selected", emptySet()) ?: emptySet()
         val protected = prefs.getStringSet("protected", emptySet()) ?: emptySet()
 
-        val targets = selected.filter {
-            it != activePackage &&
-            it != packageName &&
-            it !in protected &&
-            it != "com.android.systemui" &&
-            it != "com.android.settings"
+        synchronized(activeAppQueue) {
+            activeAppQueue.remove(activePackage)
+            activeAppQueue.addFirst(activePackage)
+
+            val toKill = mutableListOf<String>()
+
+            // If an app is in selected list and exceeds the allowed concurrency window, queue to stop
+            val managedActive = activeAppQueue.filter { it in selected && it !in protected }
+            if (managedActive.size > maxAllowed) {
+                val excess = managedActive.subList(maxAllowed, managedActive.size)
+                toKill.addAll(excess)
+                activeAppQueue.removeAll(excess.toSet())
+            }
+
+            // Also terminate any selected app that is not in the active foreground queue at all
+            for (pkg in selected) {
+                if (pkg !in protected && pkg !in activeAppQueue && pkg != activePackage) {
+                    toKill.add(pkg)
+                }
+            }
+
+            if (toKill.isNotEmpty()) {
+                killApps(toKill.distinct())
+            }
         }
+    }
 
-        Log.d(TAG, "Active: $activePackage | Targets to stop: $targets")
-
-        if (targets.isEmpty()) return
-
-        if (!Shizuku.pingBinder()) {
-            Log.e(TAG, "Shizuku pingBinder failed! Service not connected.")
-            return
-        }
-
-        if (Shizuku.checkSelfPermission() != android.content.pm.PackageManager.PERMISSION_GRANTED) {
-            Log.e(TAG, "Shizuku permission NOT granted!")
-            return
-        }
+    private fun killApps(targets: List<String>) {
+        if (!Shizuku.pingBinder()) return
+        if (Shizuku.checkSelfPermission() != android.content.pm.PackageManager.PERMISSION_GRANTED) return
 
         for (pkg in targets) {
+            if (pkg == "com.android.systemui" || pkg == "com.android.settings" || pkg == packageName) continue
             val cleanPkg = pkg.replace("'", "'\\''")
             executeShizukuCommand("am force-stop '$cleanPkg'")
         }
@@ -131,9 +142,7 @@ class FocusMonitorService : Service() {
 
     private fun executeShizukuCommand(command: String) {
         try {
-            Log.d(TAG, "Executing command: $command")
             val cmdArray = arrayOf("sh", "-c", command)
-            
             val method: Method = Shizuku::class.java.getDeclaredMethod(
                 "newProcess",
                 Array<String>::class.java,
@@ -144,20 +153,16 @@ class FocusMonitorService : Service() {
             val process = method.invoke(null, cmdArray, null, null)
 
             if (process != null) {
-                val inputStream = process.javaClass.getMethod("getInputStream").invoke(process) as? java.io.InputStream
-                val errorStream = process.javaClass.getMethod("getErrorStream").invoke(process) as? java.io.InputStream
+                val outputStream = process.javaClass.getMethod("getOutputStream").invoke(process) as? OutputStream
+                val inputStream = process.javaClass.getMethod("getInputStream").invoke(process) as? InputStream
+                val errorStream = process.javaClass.getMethod("getErrorStream").invoke(process) as? InputStream
 
-                val output = inputStream?.let { BufferedReader(InputStreamReader(it)).readText() } ?: ""
-                val err = errorStream?.let { BufferedReader(InputStreamReader(it)).readText() } ?: ""
-
-                val exitCode = process.javaClass.getMethod("waitFor").invoke(process) as? Int
-                Log.d(TAG, "Finished command: '$command' with exit code: $exitCode | out: $output | err: $err")
-            } else {
-                Log.e(TAG, "newProcess returned null")
+                outputStream?.close()
+                inputStream?.close()
+                errorStream?.close()
+                process.javaClass.getMethod("waitFor").invoke(process)
             }
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to execute Shizuku command: $command", e)
-        }
+        } catch (_: Exception) {}
     }
 
     private fun appLabel(pkg: String): String = try {
